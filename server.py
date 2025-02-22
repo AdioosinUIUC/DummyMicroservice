@@ -7,18 +7,48 @@ from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
 from databases import Database
 import sys
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+import json
+
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+
+def get_trace_id():
+    span = trace.get_current_span()
+    if not span or not span.get_span_context():
+        return None
+    return format(span.get_span_context().trace_id, "032x")
+
+def serialize(record):
+    subset = {
+        "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "message": record["message"],
+        "level": record["level"].name,
+        "filename": record["file"].name,
+        "traceId": get_trace_id(),
+        "service_name": "fastapi-app"
+    }
+    return json.dumps(subset)
+
+
+def patching(record):
+    record["extra"]["serialized"] = serialize(record)
 
 # Logging Configuration
 log_file = "/var/log/fastapi.log"
-logger.remove()
-logger.add(sys.stdout, format="{time} {level} {message}", level="INFO")
-logger.add(log_file, format="{time} {level} {message}", rotation="10 MB", level="INFO")
+logger.remove()  # Remove default log handlers
+logger = logger.patch(patching)
+logger.add(sys.stdout, format="{extra[serialized]}", level="INFO")  # Console output
+logger.add(log_file, format="{extra[serialized]}", level="INFO", rotation="10 MB")  # File output
 
 # FastAPI Application
 app = FastAPI()
 
 # Prometheus Metrics
 instrumentator = Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+FastAPIInstrumentor.instrument_app(app)
 
 # Database Configuration
 DATABASE_URL = "mysql+pymysql://:@localhost:3306/testdb"
@@ -64,13 +94,18 @@ class ItemResponse(BaseModel):
 # ------------------ Middleware ------------------
 @app.middleware("http")
 async def log_requests_middleware(request: Request, call_next):
-    logger.info(f"Request {request.method} {request.url}")
-    try:
-        response = await call_next(request)
-    except Exception as e:
-        logger.error(f"Error occurred while processing request {request.method} {request.url}: {e}", exc_info=True)
-        raise e  # Re-raise the exception so FastAPI's error handlers can manage it properly
-    return response
+    with tracer.start_as_current_span(f"HTTP {request.method} {request.url.path}") as span:
+        try:
+            trace_id = format(span.get_span_context().trace_id, "032x")
+            logger.bind(trace_id=trace_id)  # Attach trace ID to logs
+            logger.info(f"Incoming request: {request.method} {request.url}")
+
+            response = await call_next(request)
+            logger.info(f"Response sent: {response.status_code}")
+
+            return response
+        except Exception as e:
+            logger.error(str(e))
 
 # ------------------ CRUD Operations ------------------
 

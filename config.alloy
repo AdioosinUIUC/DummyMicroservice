@@ -12,9 +12,18 @@ loki.source.file "log_scrape" {
 loki.process "filter_logs" {
     stage.drop {
         source = ""
-        expression  = ".*Connection closed by authenticating user root"
+        expression  = ".*/metrics"
         drop_counter_reason = "noisy"
-      }
+    }
+    forward_to = [loki.process.add_labels.receiver]
+}
+
+loki.process "add_labels" {
+    stage.static_labels {
+        values = {
+            service_name = "fastapi-app",
+        }
+    }
     forward_to = [loki.write.grafana_loki.receiver]
 }
 
@@ -27,4 +36,8 @@ loki.write "grafana_loki" {
       //  password = "admin"
       // }
     }
+}
+
+livedebugging {
+  enabled = true
 }
