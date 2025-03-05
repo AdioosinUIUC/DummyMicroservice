@@ -22,6 +22,9 @@ databases = "^0.9.0"
 pymysql = "^1.1.1"
 aiomysql = "^0.2.0"
 opentelemetry-instrumentation-logging = "^0.51b0"
+opentelemetry-exporter-jaeger = "^1.21.0"
+opentelemetry-instrumentation-requests = "^0.51b0"
+opentelemetry-instrumentation-sqlalchemy = "^0.51b0"
 
 [build-system]
 requires = ["poetry-core"]

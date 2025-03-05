@@ -12,8 +12,32 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 import json
 
-trace.set_tracer_provider(TracerProvider())
-tracer = trace.get_tracer(__name__)
+# OpenTelemetry Imports
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+service_name = "fastapi-app"
+
+trace.set_tracer_provider(
+    TracerProvider(
+        resource=Resource.create({"service.name": service_name})  # <-- Set Service Name
+    )
+)
+tracer = trace.get_tracer(service_name)
+
+# Use HTTP instead of UDP
+jaeger_exporter = JaegerExporter(
+    collector_endpoint="http://localhost:14268/api/traces",  # Use HTTP endpoint instead of UDP
+)
+
+trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(jaeger_exporter))
+
 
 def get_trace_id():
     span = trace.get_current_span()
@@ -49,6 +73,7 @@ app = FastAPI()
 # Prometheus Metrics
 instrumentator = Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 FastAPIInstrumentor.instrument_app(app)
+RequestsInstrumentor().instrument()
 
 # Database Configuration
 DATABASE_URL = "mysql+pymysql://:@localhost:3306/testdb"
