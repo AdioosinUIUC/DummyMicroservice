@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
 from loguru import logger
+from opentelemetry.sdk.trace.sampling import StaticSampler
 from pydantic import BaseModel
 from typing import Optional, List
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -24,9 +25,20 @@ from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
 service_name = "fastapi-app"
 
+# FastAPI Application
+app = FastAPI()
+
+# Prometheus Metrics (Ensure Exclusion from Tracing)
+instrumentator = Instrumentator().instrument(app)
+instrumentator.expose(app, endpoint="/metrics")
+
+# OpenTelemetry Instrumentation (Exclude `/metrics`)
+FastAPIInstrumentor.instrument_app(app, excluded_urls=r".*metrics.*")
+RequestsInstrumentor().instrument(excluded_urls=r".*metrics.*")
+
 trace.set_tracer_provider(
     TracerProvider(
-        resource=Resource.create({"service.name": service_name})  # <-- Set Service Name
+        resource=Resource.create({"service.name": service_name}),  # <-- Set Service Name
     )
 )
 tracer = trace.get_tracer(service_name)
@@ -66,14 +78,6 @@ logger.remove()  # Remove default log handlers
 logger = logger.patch(patching)
 logger.add(sys.stdout, format="{extra[serialized]}", level="INFO")  # Console output
 logger.add(log_file, format="{extra[serialized]}", level="INFO", rotation="10 MB")  # File output
-
-# FastAPI Application
-app = FastAPI()
-
-# Prometheus Metrics
-instrumentator = Instrumentator().instrument(app).expose(app, endpoint="/metrics")
-FastAPIInstrumentor.instrument_app(app)
-RequestsInstrumentor().instrument()
 
 # Database Configuration
 DATABASE_URL = "mysql+pymysql://:@localhost:3306/testdb"
@@ -119,18 +123,27 @@ class ItemResponse(BaseModel):
 # ------------------ Middleware ------------------
 @app.middleware("http")
 async def log_requests_middleware(request: Request, call_next):
+    # Skip tracing and logging for /metrics
+    if request.url.path == "/metrics":
+        print("Here!")
+        response = await call_next(request)
+        return response  # No tracing, no logging
+
+    # Create span only for non-metrics requests
     with tracer.start_as_current_span(f"HTTP {request.method} {request.url.path}") as span:
+        response = None
         try:
             trace_id = format(span.get_span_context().trace_id, "032x")
             logger.bind(trace_id=trace_id)  # Attach trace ID to logs
-            logger.info(f"Incoming request: {request.method} {request.url}")
 
+            logger.info(f"Incoming request: {request.method} {request.url}")
             response = await call_next(request)
             logger.info(f"Response sent: {response.status_code}")
 
             return response
         except Exception as e:
             logger.error(str(e))
+            raise e
 
 # ------------------ CRUD Operations ------------------
 
